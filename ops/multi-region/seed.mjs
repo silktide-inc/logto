@@ -17,6 +17,17 @@ const DIRECTORY_ADMIN_TOKEN = process.env.DIRECTORY_ADMIN_TOKEN ?? 'dev-only-adm
 const PORTAL_CALLBACK = process.env.PORTAL_CALLBACK ?? 'http://localhost:3000/callback';
 const PORTAL_ORIGIN = new URL(PORTAL_CALLBACK).origin;
 
+/**
+ * The silktide-qa auth service is a second confidential client per region. The
+ * portal drives the Experience API, but the authorization code is minted for
+ * *this* client and redeemed by the auth service, which owns state + PKCE and
+ * holds the resulting tokens. One deployment serves every region, so the
+ * callback is region-independent.
+ */
+const AUTH_SERVICE_CALLBACK =
+  process.env.AUTH_SERVICE_CALLBACK ?? 'http://localhost:9570/v1/login/callback';
+const AUTH_SERVICE_ORIGIN = new URL(AUTH_SERVICE_CALLBACK).origin;
+
 /** Not a real-world password; it only has to survive Logto's `min(1)` guard. */
 const TEST_PASSWORD = process.env.TEST_PASSWORD ?? 'Silktide-Region-Test-2026!';
 
@@ -114,31 +125,31 @@ const useEmailSignIn = (endpoint) =>
     },
   });
 
-const ensurePortalApp = async (endpoint) => {
+const ensureApp = async (endpoint, { name, description, callback, origin }) => {
   const existing = await api(endpoint, '/applications?page=1&page_size=100');
-  const found = existing.find((app) => app.name === 'Logto Portal');
+  const found = existing.find((app) => app.name === name);
 
   if (!found) {
     return api(endpoint, '/applications', {
       method: 'POST',
       body: {
-        name: 'Logto Portal',
+        name,
         type: 'Traditional',
-        description: 'Region-aware portal (multi-region dev harness)',
+        description,
         oidcClientMetadata: {
-          redirectUris: [PORTAL_CALLBACK],
-          postLogoutRedirectUris: [PORTAL_ORIGIN],
+          redirectUris: [callback],
+          postLogoutRedirectUris: [origin],
         },
       },
     });
   }
 
-  // Reconcile rather than skip: re-running with a different PORTAL_CALLBACK
-  // (a different dev port, say) should register it, not silently keep the old
-  // one and fail at redirect time with `invalid_redirect_uri`.
-  const redirectUris = [...new Set([...found.oidcClientMetadata.redirectUris, PORTAL_CALLBACK])];
+  // Reconcile rather than skip: re-running with a different callback (a
+  // different dev port, say) should register it, not silently keep the old one
+  // and fail at redirect time with `invalid_redirect_uri`.
+  const redirectUris = [...new Set([...found.oidcClientMetadata.redirectUris, callback])];
   const postLogoutRedirectUris = [
-    ...new Set([...found.oidcClientMetadata.postLogoutRedirectUris, PORTAL_ORIGIN]),
+    ...new Set([...found.oidcClientMetadata.postLogoutRedirectUris, origin]),
   ];
 
   const unchanged =
@@ -160,7 +171,7 @@ const ensurePortalApp = async (endpoint) => {
  * and is not the OIDC client secret. The usable one lives in the application's
  * secrets collection.
  */
-const portalAppSecret = async (endpoint, applicationId) => {
+const appSecretOf = async (endpoint, applicationId) => {
   const secrets = await api(endpoint, `/applications/${applicationId}/secrets`);
   const usable = secrets.find(({ expiresAt }) => !expiresAt) ?? secrets[0];
   if (!usable) {
@@ -218,6 +229,7 @@ const main = async () => {
   });
 
   const portalEnv = [];
+  const authServiceEnv = [];
 
   for (const region of REGIONS) {
     console.log(`\n=== ${region.id.toUpperCase()} (${region.endpoint}) ===`);
@@ -227,9 +239,23 @@ const main = async () => {
     await useEmailSignIn(region.endpoint);
     console.log('  sign-in experience: email + password');
 
-    const app = await ensurePortalApp(region.endpoint);
-    const appSecret = await portalAppSecret(region.endpoint, app.id);
-    console.log(`  application: ${app.id}`);
+    const portalApp = await ensureApp(region.endpoint, {
+      name: 'Logto Portal',
+      description: 'Region-aware portal (multi-region dev harness)',
+      callback: PORTAL_CALLBACK,
+      origin: PORTAL_ORIGIN,
+    });
+    const portalSecret = await appSecretOf(region.endpoint, portalApp.id);
+    console.log(`  portal application:       ${portalApp.id}`);
+
+    const authApp = await ensureApp(region.endpoint, {
+      name: 'Silktide Auth Service',
+      description: 'silktide-qa services/auth — redeems the code, owns state + PKCE',
+      callback: AUTH_SERVICE_CALLBACK,
+      origin: AUTH_SERVICE_ORIGIN,
+    });
+    const authSecret = await appSecretOf(region.endpoint, authApp.id);
+    console.log(`  auth-service application: ${authApp.id}`);
 
     for (const user of region.users) {
       const result = await ensureUser(region.endpoint, user);
@@ -242,8 +268,13 @@ const main = async () => {
     const upper = region.id.toUpperCase();
     portalEnv.push(
       `LOGTO_${upper}_ENDPOINT=${region.endpoint}`,
-      `LOGTO_${upper}_APP_ID=${app.id}`,
-      `LOGTO_${upper}_APP_SECRET=${appSecret}`
+      `LOGTO_${upper}_APP_ID=${portalApp.id}`,
+      `LOGTO_${upper}_APP_SECRET=${portalSecret}`
+    );
+    authServiceEnv.push(
+      `LOGTO_${upper}_ENDPOINT=${region.endpoint}`,
+      `LOGTO_${upper}_APP_CLIENT_ID=${authApp.id}`,
+      `LOGTO_${upper}_APP_CLIENT_SECRET=${authSecret}`
     );
   }
 
@@ -251,6 +282,13 @@ const main = async () => {
   console.log('Copy into logto-portal/.env.local:\n');
   console.log(portalEnv.join('\n'));
   console.log(`\nDIRECTORY_URL=${DIRECTORY}`);
+
+  console.log('\n=== auth service configuration ===');
+  console.log('Copy into silktide-qa/services/auth/.env.local:\n');
+  console.log(authServiceEnv.join('\n'));
+  console.log(`AUTH_SERVICE_URL=${AUTH_SERVICE_ORIGIN}`);
+  console.log(`LOGTO_REGIONS=${REGIONS.map(({ id }) => id).join(',')}`);
+
   console.log(`\nTest password for every seeded user: ${TEST_PASSWORD}`);
 };
 
