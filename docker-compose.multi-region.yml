@@ -1,0 +1,131 @@
+# Multi-region Logto for local development and residency testing.
+#
+#   docker compose -f docker-compose.multi-region.yml up -d
+#   ./ops/multi-region/seed.sh
+#
+# Two independent Logto deployments, each with its own Postgres, plus a region
+# directory that maps HMAC(email) -> region. This is the topology from the
+# residency plan: user records never leave their region, and the only global
+# component stores keyed hashes rather than identifiers.
+#
+# NOT FOR PRODUCTION. INTEGRATION_TEST=1 disables Management API token
+# validation (see packages/core/src/middleware/koa-auth/index.ts:28) so the seed
+# script can create users without bootstrapping an M2M app. Never set it on a
+# real deployment.
+
+name: logto-regions
+
+x-logto-common: &logto-common
+  image: svhd/logto:${TAG-latest}
+  entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm start"]
+  environment: &logto-env
+    TRUST_PROXY_HEADER: 1
+    # Dev-only: lets the seed script authenticate with a `development-user-id`
+    # header instead of a real Management API token.
+    INTEGRATION_TEST: 1
+
+x-postgres-common: &postgres-common
+  image: postgres:17-alpine
+  user: postgres
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready"]
+    interval: 5s
+    timeout: 5s
+    retries: 10
+
+services:
+  postgres-eu:
+    <<: *postgres-common
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: p0stgr3s
+    ports:
+      # Exposed so the residency leak scan can query each region directly.
+      - "5442:5432"
+    volumes:
+      - postgres-eu-data:/var/lib/postgresql/data
+
+  postgres-us:
+    <<: *postgres-common
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: p0stgr3s
+    ports:
+      - "5452:5432"
+    volumes:
+      - postgres-us-data:/var/lib/postgresql/data
+
+  # The core/global database. Same engine as the regions, separate instance:
+  # "core" and "regional" are different databases on different hosts, not
+  # different schemas in one.
+  postgres-core:
+    <<: *postgres-common
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: p0stgr3s
+      POSTGRES_DB: directory
+    ports:
+      - "5462:5432"
+    volumes:
+      - postgres-core-data:/var/lib/postgresql/data
+
+  logto-eu:
+    <<: *logto-common
+    depends_on:
+      postgres-eu:
+        condition: service_healthy
+    ports:
+      - "3101:3001"
+      - "3102:3002"
+    environment:
+      <<: *logto-env
+      DB_URL: postgres://postgres:p0stgr3s@postgres-eu:5432/logto
+      ENDPOINT: http://localhost:3101
+      ADMIN_ENDPOINT: http://localhost:3102
+
+  logto-us:
+    <<: *logto-common
+    depends_on:
+      postgres-us:
+        condition: service_healthy
+    ports:
+      - "3201:3001"
+      - "3202:3002"
+    environment:
+      <<: *logto-env
+      DB_URL: postgres://postgres:p0stgr3s@postgres-us:5432/logto
+      ENDPOINT: http://localhost:3201
+      ADMIN_ENDPOINT: http://localhost:3202
+
+  # Global region directory. Stores HMAC-SHA256(email) -> region only; never a
+  # plaintext identifier. This is the one component that would sit outside a
+  # region in production, which is why it holds no readable personal data.
+  directory:
+    # Reuses the Logto image because it already ships Node and `pg`. Mounting
+    # the code under /etc/logto means Node's upward module resolution finds
+    # /etc/logto/node_modules, so `import pg` works with no image build.
+    image: svhd/logto:${TAG-latest}
+    entrypoint: ["node", "/etc/logto/directory/server.mjs"]
+    working_dir: /etc/logto
+    depends_on:
+      postgres-core:
+        condition: service_healthy
+    ports:
+      - "3300:3300"
+    environment:
+      PORT: 3300
+      DIRECTORY_HMAC_KEY: ${DIRECTORY_HMAC_KEY:-dev-only-directory-key-change-me}
+      DIRECTORY_ADMIN_TOKEN: ${DIRECTORY_ADMIN_TOKEN:-dev-only-admin-token}
+      DIRECTORY_DB_URL: postgres://postgres:p0stgr3s@postgres-core:5432/directory
+    volumes:
+      - ./ops/multi-region/directory:/etc/logto/directory:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3300/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-eu-data:
+  postgres-us-data:
+  postgres-core-data:
