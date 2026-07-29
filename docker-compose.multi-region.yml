@@ -80,7 +80,9 @@ services:
     environment:
       <<: *logto-env
       DB_URL: postgres://postgres:p0stgr3s@postgres-eu:5432/logto
-      ENDPOINT: http://localhost:3101
+      # Public endpoint served by the silktide-qa Traefik (logto.eu.silktide.localhost
+      # -> host port 3101). Direct http://localhost:3101 access still works.
+      ENDPOINT: https://logto.eu.silktide.localhost
       ADMIN_ENDPOINT: http://localhost:3102
 
   logto-us:
@@ -94,7 +96,9 @@ services:
     environment:
       <<: *logto-env
       DB_URL: postgres://postgres:p0stgr3s@postgres-us:5432/logto
-      ENDPOINT: http://localhost:3201
+      # Public endpoint served by the silktide-qa Traefik (logto.us.silktide.localhost
+      # -> host port 3201). Direct http://localhost:3201 access still works.
+      ENDPOINT: https://logto.us.silktide.localhost
       ADMIN_ENDPOINT: http://localhost:3202
 
   # Global region directory. Stores HMAC-SHA256(email) -> region only; never a

@@ -31,18 +31,40 @@ const AUTH_SERVICE_ORIGIN = new URL(AUTH_SERVICE_CALLBACK).origin;
 /** Not a real-world password; it only has to survive Logto's `min(1)` guard. */
 const TEST_PASSWORD = process.env.TEST_PASSWORD ?? 'Silktide-Region-Test-2026!';
 
+/**
+ * Extra EU users, comma-separated emails. The Silktide CLI passes the local
+ * Marvel developer account here so the same person exists in Logto, the
+ * directory AND Marvel — which is what lets a local sign-in resolve to a real
+ * assignee instead of ?error=no-account.
+ */
+const EXTRA_EU_USERS = (process.env.SEED_EXTRA_EU_USERS ?? '')
+  .split(',')
+  .map((email) => email.trim())
+  .filter(Boolean)
+  .map((email) => ({ primaryEmail: email, name: email.split('@')[0] }));
+
+/**
+ * `endpoint` is the direct host port the seed talks to (never depends on the
+ * QA Traefik being up); `publicEndpoint` is what browsers and the portal/auth
+ * services use — the ENDPOINT each container is configured with in
+ * docker-compose.multi-region.yml, served by the silktide-qa Traefik. The
+ * printed env blocks carry the public one.
+ */
 const REGIONS = [
   {
     id: 'eu',
     endpoint: 'http://localhost:3101',
+    publicEndpoint: 'https://logto.eu.silktide.localhost',
     users: [
       { primaryEmail: 'alice@eu-example.com', name: 'Alice (EU)' },
       { primaryEmail: 'bob@eu-example.com', name: 'Bob (EU)' },
+      ...EXTRA_EU_USERS,
     ],
   },
   {
     id: 'us',
     endpoint: 'http://localhost:3201',
+    publicEndpoint: 'https://logto.us.silktide.localhost',
     users: [
       { primaryEmail: 'carol@us-example.com', name: 'Carol (US)' },
       { primaryEmail: 'dave@us-example.com', name: 'Dave (US)' },
@@ -267,12 +289,12 @@ const main = async () => {
 
     const upper = region.id.toUpperCase();
     portalEnv.push(
-      `LOGTO_${upper}_ENDPOINT=${region.endpoint}`,
+      `LOGTO_${upper}_ENDPOINT=${region.publicEndpoint}`,
       `LOGTO_${upper}_APP_ID=${portalApp.id}`,
       `LOGTO_${upper}_APP_SECRET=${portalSecret}`
     );
     authServiceEnv.push(
-      `LOGTO_${upper}_ENDPOINT=${region.endpoint}`,
+      `LOGTO_${upper}_ENDPOINT=${region.publicEndpoint}`,
       `LOGTO_${upper}_APP_CLIENT_ID=${authApp.id}`,
       `LOGTO_${upper}_APP_CLIENT_SECRET=${authSecret}`
     );
