@@ -6,7 +6,8 @@
 # Two independent Logto deployments, each with its own Postgres, plus a region
 # directory that maps HMAC(email) -> region. This is the topology from the
 # residency plan: user records never leave their region, and the only global
-# component stores keyed hashes rather than identifiers.
+# component stores keyed hashes rather than identifiers. A shared Mailpit
+# catches every email either region sends (http://localhost:8025).
 #
 # NOT FOR PRODUCTION. INTEGRATION_TEST=1 disables Management API token
 # validation (see packages/core/src/middleware/koa-auth/index.ts:28) so the seed
@@ -128,6 +129,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Catches everything the regions send (password reset codes, MFA codes) so
+  # the branded templates can be eyeballed without a real mail provider. The
+  # SMTP connector that seed.mjs configures in each region points at
+  # mailpit:1025 over the compose network; the web UI is on localhost:8025.
+  # Shared across regions on purpose — it is a dev tool, not user data.
+  mailpit:
+    image: axllent/mailpit
+    environment:
+      # The seeded SMTP connector must carry non-empty auth (Logto's route
+      # layer strips empty objects from connector config, and the SMTP guard
+      # requires `auth`), so accept whatever credentials it presents.
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    ports:
+      - "8025:8025"
 
 volumes:
   postgres-eu-data:
